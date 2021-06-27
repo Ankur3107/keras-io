@@ -149,7 +149,7 @@ def read_dpr_json(
                         }
                     )
         # Place Positive passage first and then negative passages
-        # This will be used to make in-batch labels for loss calculation. 
+        # This will be used to make in-batch labels for loss calculation.
         sample["passages"] = positive_passages + negative_passages
         if len(sample["passages"]) == num_positives + num_hard_negatives:
             standard_dicts.append(sample)
@@ -166,7 +166,7 @@ dicts = read_dpr_json(
 
 
 def encode_query_passage(tokenizer, dicts, model_config, data_config):
-    """Encode Text i.e. queries and passages into token_ids """
+    """Encode Text i.e. queries and passages into token_ids"""
 
     passage_input_ids = []
     passage_token_type_ids = []
@@ -225,6 +225,7 @@ def encode_query_passage(tokenizer, dicts, model_config, data_config):
         "passage_attention_mask": np.array(passage_attention_mask),
     }
 
+
 # Load Pretrained tokenizer
 tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
 # Encoder queries and passages
@@ -237,6 +238,7 @@ X = encode_query_passage(tokenizer, dicts, model_config, data_config)
 
 class QueryModel(tf.keras.Model):
     """Query Model"""
+
     def __init__(self, model_config, **kwargs):
         super().__init__(**kwargs)
         # Load Pretrained models
@@ -253,12 +255,11 @@ class QueryModel(tf.keras.Model):
 
 class PassageModel(tf.keras.Model):
     """Passage Model"""
+
     def __init__(self, model_config, **kwargs):
         super().__init__(**kwargs)
         # Load Pretrained models
-        self.passage_encoder = TFAutoModel.from_pretrained(
-            model_config.model_name
-        )
+        self.passage_encoder = TFAutoModel.from_pretrained(model_config.model_name)
         # Add dropout layer
         self.dropout = layers.Dropout(model_config.dropout)
 
@@ -277,14 +278,14 @@ def cross_replica_concat(values):
 
     return tf.roll(
         gathered,
-        -context.replica_id_in_sync_group
-        * values.shape[0],
+        -context.replica_id_in_sync_group * values.shape[0],
         axis=0,
     )
 
 
 class BiEncoderModel(tf.keras.Model):
-    """Bi-Encoder Query & Passage Model """
+    """Bi-Encoder Query & Passage Model"""
+
     def __init__(
         self,
         query_encoder,
@@ -374,7 +375,7 @@ class BiEncoderModel(tf.keras.Model):
             passage_embeddings = self.passage_forward(X)
             query_embeddings = self.query_forward(X)
 
-            # Get all replica concat values for In-Batch loss calculation 
+            # Get all replica concat values for In-Batch loss calculation
             global_passage_embeddings = cross_replica_concat(passage_embeddings, 32)
             global_query_embeddings = cross_replica_concat(query_embeddings, 16)
 
@@ -442,6 +443,7 @@ bi_model.fit(train_ds, epochs=N_EPOCHS)
 ## Model Evaluation
 """
 
+# Read dev json for evaluation
 eval_dicts = read_dpr_json(
     "biencoder-nq-dev.json", num_hard_negatives=30, shuffle_negatives=False
 )
@@ -494,12 +496,13 @@ def process_examples(dicts):
         global_answer_index = global_answer_index + len(passages)
     return queries, answer_indexes, processed_passages
 
-
+# Process examples for evaluation
 queries, answer_indexes, processed_passages = process_examples(eval_dicts)
-print(len(processed_passages)), print(len(queries))
+print(len(processed_passages), len(queries))
 
 
 def extracted_passage_embeddings(processed_passages, model_config):
+    """Extract Passage Embeddings"""
     passage_inputs = tokenizer.batch_encode_plus(
         processed_passages,
         add_special_tokens=True,
@@ -524,6 +527,7 @@ passage_embeddings = extracted_passage_embeddings(processed_passages, model_conf
 
 
 def extracted_query_embeddings(queries, model_config):
+    """Extract Query Embeddings"""
     query_inputs = tokenizer.batch_encode_plus(
         queries,
         add_special_tokens=True,
@@ -547,6 +551,7 @@ def extracted_query_embeddings(queries, model_config):
 query_embeddings = extracted_query_embeddings(queries, model_config)
 
 
+# Load into Faiss
 faiss_index = faiss.IndexFlatL2(768)
 faiss_index.add(passage_embeddings)
 
@@ -563,7 +568,7 @@ def get_k_accuracy(faiss_index, query_embeddings, answer_indexes, k):
             corrects.append((i, answer_indexes[i]))
     return corrects
 
-
+# Calculate Top-k Acc.
 top10_corrects = get_k_accuracy(faiss_index, query_embeddings, answer_indexes, k=10)
 top20_corrects = get_k_accuracy(faiss_index, query_embeddings, answer_indexes, k=20)
 top50_corrects = get_k_accuracy(faiss_index, query_embeddings, answer_indexes, k=50)
@@ -585,5 +590,6 @@ results = pd.DataFrame(
     }
 )
 
+# Show results
 results["accuracy"] = (results["correct_total"] / results["total"]) * 100
 print(results)
