@@ -9,7 +9,7 @@ Description: Implement a Dense Passage Retriever with BERT using NQ-Wikipedia Da
 ## Introduction
 
 Open-domain question answering relies on efficient passage retrieval to select 
-candidatecontexts, where traditional sparse vector spacemodels, such as TF-IDF 
+candidate contexts, where traditional sparse vector space models, such as TF-IDF 
 or BM25, are the defacto method.
 
 We can implement using dense representations, where embeddings are learned from 
@@ -22,23 +22,22 @@ Original Paper [link](https://arxiv.org/pdf/2004.04906.pdf)
 """
 ## Setup
 
-Install `transformers`, `faiss-cpu` and `tensorflow_addons` via `pip install -q transformers faiss-cpu tensorflow_addons``.
+Install `transformers`, `faiss-cpu` via `pip install -q transformers faiss-cpu``.
 """
 
-import json
-import random
-from dataclasses import dataclass
-import numpy as np
-from transformers import AutoTokenizer
 import os
-from transformers import AutoTokenizer, TFAutoModel
-import tensorflow as tf
+import json
+import faiss
+import random
 import numpy as np
+import pandas as pd
+import tensorflow as tf
 from tensorflow import keras
 from tqdm import tqdm_notebook
-import tensorflow_addons as tfa
-import faiss
-import pandas as pd
+from dataclasses import dataclass
+from tensorflow.keras import layers
+from transformers import AutoTokenizer
+from transformers import AutoTokenizer, TFAutoModel
 
 
 """
@@ -59,16 +58,17 @@ gunzip biencoder-nq-dev.json.gz
 ## Data & Model Configuration Setup
 """
 
-
+# Configure dataset
 @dataclass
 class DataConfig:
-    num_positives = 1
-    num_hard_negatives = 1
+    num_positives = 1 # No. of positive
+    num_hard_negatives = 1 # No of hard negatives
 
 
 data_config = DataConfig()
 
-
+# Configure models
+@dataclass
 class ModelConfig:
     passage_max_seq_len = 156
     query_max_seq_len = 64
@@ -77,8 +77,8 @@ class ModelConfig:
     learning_rate = 2e-5
     num_warmup_steps = 1234
     dropout = 0.1
-    model_name = "bert-base-uncased"
-
+    query_model_name = "bert-base-uncased"
+    passage_model_name = "bert-base-uncased"
 
 model_config = ModelConfig()
 
@@ -95,16 +95,22 @@ def read_dpr_json(
     shuffle_negatives=True,
     shuffle_positives=False,
 ):
+    """Read Json file and reture list of dicts"""
 
     dicts = json.load(open(file, encoding="utf-8"))
 
+    # Query key options
     query_json_keys = ["question", "questions", "query"]
+    
+    # Positive key options
     positive_context_json_keys = [
         "positive_contexts",
         "positive_ctxs",
         "positive_context",
         "positive_ctx",
     ]
+
+    # Hard Negative key options
     hard_negative_json_keys = [
         "hard_negative_contexts",
         "hard_negative_ctxs",
@@ -149,7 +155,6 @@ def read_dpr_json(
             if len(standard_dicts) == max_samples:
                 break
     return standard_dicts
-
 
 dicts = read_dpr_json(
     "biencoder-nq-adv-hn-train.json", max_samples=6400, num_hard_negatives=1
@@ -226,8 +231,8 @@ X = encode_query_passage(tokenizer, dicts, model_config, data_config)
 class QueryModel(tf.keras.Model):
     def __init__(self, model_config, **kwargs):
         super().__init__(**kwargs)
-        self.query_encoder = TFAutoModel.from_pretrained(model_config.model_name)
-        self.dropout = tf.keras.layers.Dropout(model_config.dropout)
+        self.query_encoder = TFAutoModel.from_pretrained(model_config.query_model_name)
+        self.dropout = layers.Dropout(model_config.dropout)
 
     def call(self, inputs, training=False, **kwargs):
 
@@ -240,8 +245,8 @@ class QueryModel(tf.keras.Model):
 class PassageModel(tf.keras.Model):
     def __init__(self, model_config, **kwargs):
         super().__init__(**kwargs)
-        self.passage_encoder = TFAutoModel.from_pretrained(model_config.model_name)
-        self.dropout = tf.keras.layers.Dropout(model_config.dropout)
+        self.passage_encoder = TFAutoModel.from_pretrained(model_config.passage_model_name)
+        self.dropout = layers.Dropout(model_config.dropout)
 
     def call(self, inputs, training=False, **kwargs):
 
@@ -281,9 +286,9 @@ class BiEncoderModel(tf.keras.Model):
         self.num_passages_per_question = num_passages_per_question
         self.model_config = model_config
 
-        self.loss_tracker = tf.keras.metrics.Mean(name="loss")
-        self.loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(
-            reduction=tf.keras.losses.Reduction.NONE, from_logits=True
+        self.loss_tracker = keras.metrics.Mean(name="loss")
+        self.loss_fn = keras.losses.SparseCategoricalCrossentropy(
+            reduction= keras.losses.Reduction.NONE, from_logits=True
         )
 
     def calculate_loss(self, logits):
