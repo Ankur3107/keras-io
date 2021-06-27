@@ -72,12 +72,12 @@ data_config = DataConfig()
 class ModelConfig:
     passage_max_seq_len = 156
     query_max_seq_len = 64
-    batch_size_per_replica = 16
-    epochs = 5
+    batch_size_per_replica = 128
+    epochs = 40
     learning_rate = 2e-5
     num_warmup_steps = 1234
     dropout = 0.1
-    model_name = "bert-base-uncased"
+    model_name = "google/bert_uncased_L-4_H-512_A-8"
 
 
 model_config = ModelConfig()
