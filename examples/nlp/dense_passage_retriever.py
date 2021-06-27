@@ -61,8 +61,8 @@ gunzip biencoder-nq-dev.json.gz
 # Configure dataset
 @dataclass
 class DataConfig:
-    num_positives = 1 # No. of positive
-    num_hard_negatives = 1 # No of hard negatives
+    num_positives = 1  # No. of positive
+    num_hard_negatives = 1  # No of hard negatives
 
 
 data_config = DataConfig()
@@ -77,8 +77,8 @@ class ModelConfig:
     learning_rate = 2e-5
     num_warmup_steps = 1234
     dropout = 0.1
-    query_model_name = "bert-base-uncased"
-    passage_model_name = "bert-base-uncased"
+    model_name = "bert-base-uncased"
+
 
 model_config = ModelConfig()
 
@@ -101,7 +101,7 @@ def read_dpr_json(
 
     # Query key options
     query_json_keys = ["question", "questions", "query"]
-    
+
     # Positive key options
     positive_context_json_keys = [
         "positive_contexts",
@@ -148,6 +148,8 @@ def read_dpr_json(
                             "label": "hard_negative",
                         }
                     )
+        # Place Positive passage first and then negative passages
+        # This will be used to make in-batch labels for loss calculation. 
         sample["passages"] = positive_passages + negative_passages
         if len(sample["passages"]) == num_positives + num_hard_negatives:
             standard_dicts.append(sample)
@@ -156,13 +158,16 @@ def read_dpr_json(
                 break
     return standard_dicts
 
+
+# Read training json file
 dicts = read_dpr_json(
     "biencoder-nq-adv-hn-train.json", max_samples=6400, num_hard_negatives=1
 )
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
 
 
 def encode_query_passage(tokenizer, dicts, model_config, data_config):
+    """Encode Text i.e. queries and passages into token_ids """
+
     passage_input_ids = []
     passage_token_type_ids = []
     passage_attention_mask = []
@@ -220,7 +225,9 @@ def encode_query_passage(tokenizer, dicts, model_config, data_config):
         "passage_attention_mask": np.array(passage_attention_mask),
     }
 
-
+# Load Pretrained tokenizer
+tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
+# Encoder queries and passages
 X = encode_query_passage(tokenizer, dicts, model_config, data_config)
 
 """
@@ -229,34 +236,41 @@ X = encode_query_passage(tokenizer, dicts, model_config, data_config)
 
 
 class QueryModel(tf.keras.Model):
+    """Query Model"""
     def __init__(self, model_config, **kwargs):
         super().__init__(**kwargs)
-        self.query_encoder = TFAutoModel.from_pretrained(model_config.query_model_name)
+        # Load Pretrained models
+        self.query_encoder = TFAutoModel.from_pretrained(model_config.model_name)
+        # Add dropout layer
         self.dropout = layers.Dropout(model_config.dropout)
 
     def call(self, inputs, training=False, **kwargs):
 
         pooled_output = self.query_encoder(inputs, training=training, **kwargs)[1]
         pooled_output = self.dropout(pooled_output, training=training)
-        print("Q pooled_output :", pooled_output.shape)
         return pooled_output
 
 
 class PassageModel(tf.keras.Model):
+    """Passage Model"""
     def __init__(self, model_config, **kwargs):
         super().__init__(**kwargs)
-        self.passage_encoder = TFAutoModel.from_pretrained(model_config.passage_model_name)
+        # Load Pretrained models
+        self.passage_encoder = TFAutoModel.from_pretrained(
+            model_config.model_name
+        )
+        # Add dropout layer
         self.dropout = layers.Dropout(model_config.dropout)
 
     def call(self, inputs, training=False, **kwargs):
 
         pooled_output = self.passage_encoder(inputs, training=training, **kwargs)[1]
         pooled_output = self.dropout(pooled_output, training=training)
-        print("P pooled_output :", pooled_output.shape)
         return pooled_output
 
 
-def cross_replica_concat(values, v_shape):
+def cross_replica_concat(values):
+    """Get concat values from all replica"""
 
     context = tf.distribute.get_replica_context()
     gathered = context.all_gather(values, axis=0)
@@ -264,12 +278,13 @@ def cross_replica_concat(values, v_shape):
     return tf.roll(
         gathered,
         -context.replica_id_in_sync_group
-        * values.shape[0],  # v_shape,#values.shape[0],
+        * values.shape[0],
         axis=0,
     )
 
 
 class BiEncoderModel(tf.keras.Model):
+    """Bi-Encoder Query & Passage Model """
     def __init__(
         self,
         query_encoder,
@@ -281,21 +296,32 @@ class BiEncoderModel(tf.keras.Model):
     ):
         super().__init__(*args, **kwargs)
 
+        # Query encoder model
         self.query_encoder = query_encoder
+        # Passage encoder model
         self.passage_encoder = passage_encoder
+        # No. positives plus No. of hard negatives
         self.num_passages_per_question = num_passages_per_question
+        # Model configuration
         self.model_config = model_config
 
+        # Loss tracker
         self.loss_tracker = keras.metrics.Mean(name="loss")
+        # Define loss
         self.loss_fn = keras.losses.SparseCategoricalCrossentropy(
-            reduction= keras.losses.Reduction.NONE, from_logits=True
+            reduction=keras.losses.Reduction.NONE, from_logits=True
         )
 
     def calculate_loss(self, logits):
+        """Function to calculate in batch loss"""
 
+        # Get no of queries from global batch size
         num_queries = tf.shape(logits)[0]
+        # Get no of passages from global batch size
         num_candidates = tf.shape(logits)[1]
 
+        # Make In-Batch Labels:
+        # Given single quetion positives are placed first followed by negatives.
         labels = tf.convert_to_tensor(
             [
                 i
@@ -312,6 +338,8 @@ class BiEncoderModel(tf.keras.Model):
         return scale_loss
 
     def passage_forward(self, X):
+
+        # Reshape input (BS, num_passages_per_question, seq_len) -> (BS*num_passages_per_question, seq_len)
         input_shape = (
             self.model_config.batch_size_per_replica * self.num_passages_per_question,
             self.model_config.passage_max_seq_len,
@@ -319,12 +347,14 @@ class BiEncoderModel(tf.keras.Model):
         input_ids = tf.reshape(X["passage_input_ids"], input_shape)
         attention_mask = tf.reshape(X["passage_attention_mask"], input_shape)
         token_type_ids = tf.reshape(X["passage_token_type_ids"], input_shape)
+        # Call passage encoder model
         outputs = self.passage_encoder(
             [input_ids, attention_mask, token_type_ids], training=True
         )
         return outputs
 
     def query_forward(self, X):
+        # Reshape input (BS, seq_len) -> (BS, seq_len)
         input_shape = (
             self.model_config.batch_size_per_replica,
             self.model_config.query_max_seq_len,
@@ -340,12 +370,15 @@ class BiEncoderModel(tf.keras.Model):
     def train_step(self, X):
 
         with tf.GradientTape() as tape:
+            # Call encoder models
             passage_embeddings = self.passage_forward(X)
             query_embeddings = self.query_forward(X)
 
+            # Get all replica concat values for In-Batch loss calculation 
             global_passage_embeddings = cross_replica_concat(passage_embeddings, 32)
             global_query_embeddings = cross_replica_concat(query_embeddings, 16)
 
+            # Dot product similarity
             similarity_scores = tf.linalg.matmul(
                 global_query_embeddings, global_passage_embeddings, transpose_b=True
             )
@@ -376,7 +409,7 @@ one_epoch_steps = int(len(dicts) / GLOBAL_BATCH_SIZE)
 num_train_steps = one_epoch_steps * N_EPOCHS
 num_warmup_steps = num_train_steps // 10
 
-
+# Define model under strategy scope
 with strategy.scope():
     query_encoder = QueryModel(model_config)
     passage_encoder = PassageModel(model_config)
@@ -402,6 +435,7 @@ with strategy.scope():
         .batch(GLOBAL_BATCH_SIZE, drop_remainder=True)
     )
 
+# Train on TPU
 bi_model.fit(train_ds, epochs=N_EPOCHS)
 
 """
