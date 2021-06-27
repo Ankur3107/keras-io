@@ -3,7 +3,7 @@ Title: Dense Passage Retriever on TPU
 Author: [Ankur Singh](https://twitter.com/ankur310794)
 Date created: 2021/06/24
 Last modified: 2021/06/24
-Description: Implement a Dense Passage Retriever with BERT using NQ-Wikipedia Dataset.
+Description: Implement a Dense Passage Retriever using NQ-Wikipedia Dataset.
 """
 """
 ## Introduction
@@ -496,6 +496,7 @@ def process_examples(dicts):
         global_answer_index = global_answer_index + len(passages)
     return queries, answer_indexes, processed_passages
 
+
 # Process examples for evaluation
 queries, answer_indexes, processed_passages = process_examples(eval_dicts)
 print(len(processed_passages), len(queries))
@@ -567,6 +568,7 @@ def get_k_accuracy(faiss_index, query_embeddings, answer_indexes, k):
         if i_count > 0:
             corrects.append((i, answer_indexes[i]))
     return corrects
+
 
 # Calculate Top-k Acc.
 top10_corrects = get_k_accuracy(faiss_index, query_embeddings, answer_indexes, k=10)
